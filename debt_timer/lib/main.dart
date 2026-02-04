@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -49,6 +50,8 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
   final TextEditingController _totalController = TextEditingController();
 
   DebtResult? _result;
+  Timer? _ticker;
+  int? _remainingSeconds;
 
   @override
   void initState() {
@@ -57,10 +60,22 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
     _paymentController.addListener(_recalculate);
     _totalController.addListener(_recalculate);
     _recalculate();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) {
+        return;
+      }
+      final current = _remainingSeconds;
+      if (current != null && current > 0) {
+        setState(() {
+          _remainingSeconds = current - 1;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _ticker?.cancel();
     _lenderController.dispose();
     _rateController.dispose();
     _paymentController.dispose();
@@ -79,6 +94,11 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
         annualRatePercent: annualRate,
         monthlyPayment: monthlyPayment,
       );
+      if (_result!.canPayoff) {
+        _remainingSeconds = _result!.totalSeconds ?? 0;
+      } else {
+        _remainingSeconds = null;
+      }
     });
   }
 
@@ -155,7 +175,7 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
       );
     }
 
-    final seconds = _result?.seconds ?? 0;
+    final breakdown = _currentBreakdown();
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -165,13 +185,13 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
         ),
         const SizedBox(height: 6),
         Text(
-          '${_result!.years}年${_result!.months}ヶ月${_result!.days}日',
+          '${breakdown.years}年${breakdown.months}ヶ月${breakdown.days}日',
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 4),
         Text(
-          '${seconds}秒',
+          '${breakdown.seconds}秒',
           style: const TextStyle(fontSize: 14, color: Color(0xFF757575)),
         ),
       ],
@@ -271,7 +291,7 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
       );
     }
 
-    final seconds = _result?.seconds ?? 0;
+    final breakdown = _currentBreakdown();
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -281,29 +301,69 @@ class _DebtTimerPageState extends State<DebtTimerPage> {
         border: Border.all(color: const Color(0xFFC5E1A5)),
       ),
       child: Text(
-        '完済まであと${_result!.years}年${_result!.months}ヶ月${_result!.days}日${seconds}秒です。',
+        '完済まであと${breakdown.years}年${breakdown.months}ヶ月${breakdown.days}日${breakdown.seconds}秒です。',
         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
       ),
     );
   }
+
+  RemainingBreakdown _currentBreakdown() {
+    if (_result == null || !_result!.canPayoff) {
+      return const RemainingBreakdown.zero();
+    }
+    final baseSeconds = _result!.totalSeconds ?? 0;
+    final remaining = max(0, _remainingSeconds ?? baseSeconds);
+    return _secondsToBreakdown(remaining);
+  }
+
+  RemainingBreakdown _secondsToBreakdown(int totalSeconds) {
+    const secondsPerDay = 24 * 60 * 60;
+    const daysPerMonth = 30;
+    const daysPerYear = 360;
+    final totalDays = totalSeconds ~/ secondsPerDay;
+    final years = totalDays ~/ daysPerYear;
+    final months = (totalDays % daysPerYear) ~/ daysPerMonth;
+    final days = totalDays % daysPerMonth;
+    final seconds = totalSeconds % secondsPerDay;
+    return RemainingBreakdown(
+      years: years,
+      months: months,
+      days: days,
+      seconds: seconds,
+    );
+  }
 }
 
-class DebtResult {
-  DebtResult({
-    required this.hasInputs,
-    required this.canPayoff,
+class RemainingBreakdown {
+  const RemainingBreakdown({
     required this.years,
     required this.months,
     required this.days,
     required this.seconds,
   });
 
-  final bool hasInputs;
-  final bool canPayoff;
+  const RemainingBreakdown.zero()
+      : years = 0,
+        months = 0,
+        days = 0,
+        seconds = 0;
+
   final int years;
   final int months;
   final int days;
-  final int? seconds;
+  final int seconds;
+}
+
+class DebtResult {
+  DebtResult({
+    required this.hasInputs,
+    required this.canPayoff,
+    required this.totalSeconds,
+  });
+
+  final bool hasInputs;
+  final bool canPayoff;
+  final int? totalSeconds;
 }
 
 class DebtCalculator {
@@ -322,10 +382,7 @@ class DebtCalculator {
       return DebtResult(
         hasInputs: false,
         canPayoff: false,
-        years: 0,
-        months: 0,
-        days: 0,
-        seconds: 0,
+        totalSeconds: 0,
       );
     }
 
@@ -339,10 +396,7 @@ class DebtCalculator {
         return DebtResult(
           hasInputs: true,
           canPayoff: false,
-          years: 0,
-          months: 0,
-          days: 0,
-          seconds: 0,
+          totalSeconds: 0,
         );
       }
       monthsExact =
@@ -350,19 +404,11 @@ class DebtCalculator {
     }
 
     final totalSeconds = max(0, (monthsExact * 30 * 24 * 60 * 60).ceil());
-    final totalDays = totalSeconds ~/ (24 * 60 * 60);
-    final years = totalDays ~/ 360;
-    final months = (totalDays % 360) ~/ 30;
-    final days = totalDays % 30;
-    final seconds = totalSeconds % (24 * 60 * 60);
 
     return DebtResult(
       hasInputs: true,
       canPayoff: true,
-      years: years,
-      months: months,
-      days: days,
-      seconds: seconds,
+      totalSeconds: totalSeconds,
     );
   }
 }
